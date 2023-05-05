@@ -5,9 +5,12 @@ import java.awt.Color;
 import java.awt.Component;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import javax.swing.JFrame;
 import javax.swing.JPanel;
@@ -15,9 +18,15 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTree;
 import javax.swing.SwingUtilities;
+import javax.swing.event.TreeSelectionEvent;
+import javax.swing.event.TreeSelectionListener;
 import javax.swing.tree.DefaultMutableTreeNode;
 import javax.swing.tree.DefaultTreeCellRenderer;
 import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.MutableTreeNode;
+import javax.swing.tree.TreeNode;
+import javax.swing.tree.TreePath;
+import javax.swing.tree.TreeSelectionModel;
 
 import org.carlmontrobotics.commandvisualizer.CommandDescriptor;
 import org.carlmontrobotics.commandvisualizer.CommandVisualizer;
@@ -27,12 +36,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import edu.wpi.first.networktables.NetworkTableEvent;
 import edu.wpi.first.networktables.NetworkTableInstance;
 
-public class GUI extends JFrame {
+public class GUI extends JFrame implements TreeSelectionListener {
 
     private final JTree commandTree;
     private final DefaultTreeModel commandTreeModel;
     private final DefaultMutableTreeNode rootCommandNode;
     private final JSplitPane splitPane;
+    private final JPanel emptyPanel;
+    private DefaultMutableTreeNode selectedNode;
+    private CommandView commandView = new DefaultCommandView();
 
     public GUI() {
         super("Command Visualizer");
@@ -40,16 +52,30 @@ public class GUI extends JFrame {
         setLocationRelativeTo(null);
         setDefaultCloseOperation(EXIT_ON_CLOSE);
 
-        commandTree = new JTree(
-                commandTreeModel = new DefaultTreeModel(rootCommandNode = new DefaultMutableTreeNode(null)));
+        Comparator<CommandDescriptor> topLevelOrderer = Comparator.comparing(
+                descriptor -> descriptor.name,
+                String.CASE_INSENSITIVE_ORDER);
 
+        commandTree = new JTree(
+                commandTreeModel = new DefaultTreeModel(rootCommandNode = new DefaultMutableTreeNode(null) {
+                    @Override
+                    public void add(MutableTreeNode newChild) {
+                        super.add(newChild);
+                        Collections.sort(children, Comparator.comparing(
+                                node -> ((CommandDescriptor) ((DefaultMutableTreeNode) node).getUserObject()),
+                                topLevelOrderer));
+                    }
+                }));
+
+        commandTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         commandTree.setCellRenderer(new TreeCellRenderer());
         commandTree.setRootVisible(false);
+        commandTree.addTreeSelectionListener(this);
 
         add(splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 new JScrollPane(commandTree, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                         JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED),
-                new JPanel()), BorderLayout.CENTER);
+                emptyPanel = new JPanel()), BorderLayout.CENTER);
 
         NetworkTableInstance.getDefault().addListener(
                 NetworkTableInstance.getDefault().getTopic(CommandVisualizer.NT_KEY),
@@ -70,49 +96,64 @@ public class GUI extends JFrame {
     }
 
     public void updateCommandTree(CommandDescriptor[] descriptors) {
+        // Store the selected path to restore it after updating the tree
+        // Sometimes, the tree deselects the selected path when updating
+        TreePath selectedPath = commandTree.getSelectionPath();
         updateCommandTree(descriptors, rootCommandNode);
-        updateCommandTree();
+        if (validatePath(selectedPath, rootCommandNode)) {
+            commandTree.expandPath(selectedPath);
+            commandTree.setSelectionPath(selectedPath);
+        }
     }
 
     public void updateCommandTree(CommandDescriptor[] descriptors, DefaultMutableTreeNode node) {
         List<Integer> descriptorIds = Arrays.asList(descriptors).stream().map(descriptor -> descriptor.id)
                 .collect(Collectors.toList());
-        List<CommandDescriptor> newDescriptors = new ArrayList<>(Arrays.asList(descriptors)); // Wrap in ArrayList to
-                                                                                              // allow removal
-        List<Integer> toRemove = new ArrayList<>(); // Temporary list to store indices of nodes to remove to avoid
-                                                    // concurrent modification
-        for (int nodeIdx = 0; nodeIdx < node.getChildCount(); nodeIdx++) {
-            DefaultMutableTreeNode childNode = (DefaultMutableTreeNode) node.getChildAt(nodeIdx);
-            int descriptorIdx = descriptorIds.indexOf(((CommandDescriptor) childNode.getUserObject()).id);
-            if (descriptorIdx == -1) {
-                toRemove.add(nodeIdx);
-            } else {
-                childNode.setUserObject(
-                        descriptors[descriptorIds.indexOf(((CommandDescriptor) childNode.getUserObject()).id)]);
-                updateCommandTree(descriptors[descriptorIdx].subCommands, childNode);
-                newDescriptors.remove(descriptors[descriptorIdx]);
+        // Wrap in ArrayList to allow removal
+        List<CommandDescriptor> newDescriptors = new ArrayList<>(Arrays.asList(descriptors));
+        // Temporary list to store nodes to remove to avoid concurrent modification
+        List<TreeNode> toRemove = new ArrayList<>();
+
+        if (node.getChildCount() != 0) {
+            for (int nodeIdx = 0; nodeIdx < node.getChildCount(); nodeIdx++) {
+                DefaultMutableTreeNode childNode = (DefaultMutableTreeNode) node.getChildAt(nodeIdx);
+                int descriptorIdx = descriptorIds.indexOf(((CommandDescriptor) childNode.getUserObject()).id);
+                if (descriptorIdx == -1) {
+                    toRemove.add(node.getChildAt(nodeIdx));
+                } else {
+                    childNode.setUserObject(
+                            descriptors[descriptorIds.indexOf(((CommandDescriptor) childNode.getUserObject()).id)]);
+                    updateCommandTree(descriptors[descriptorIdx].subCommands, childNode);
+                    newDescriptors.remove(descriptors[descriptorIdx]);
+                }
+            }
+            commandTreeModel.nodesChanged(node, IntStream.range(0, node.getChildCount()).toArray());
+        }
+
+        if (!toRemove.isEmpty()) {
+            // Store pre-removal indices to update the tree model
+            int[] removedIndices = toRemove.stream().mapToInt(child -> node.getIndex(child)).toArray();
+            // We have to recalculate the indices as we are removing nodes
+            toRemove.forEach(child -> node.remove(node.getIndex(child)));
+            commandTreeModel.nodesWereRemoved(node, removedIndices, toRemove.toArray());
+            if (toRemove.contains(selectedNode)) {
+                closeCommandView();
             }
         }
-        // We have to convert the indices to nodes because the indices change as we
-        // remove nodes
-        // Force the collection into a temporary list so that the indices are used
-        // before we start removing nodes
-        toRemove.stream().map(node::getChildAt).collect(Collectors.toList())
-                .forEach(child -> node.remove(node.getIndex(child)));
-        for (CommandDescriptor descriptor : newDescriptors) {
-            DefaultMutableTreeNode newNode = new DefaultMutableTreeNode(descriptor);
-            updateCommandTree(descriptor.subCommands, newNode);
-            node.add(newNode);
-        }
-    }
 
-    public void updateCommandTree() {
-        // for(int nodeIdx = 0; nodeIdx < rootCommandNode.getChildCount(); nodeIdx++) {
-        // DefaultMutableTreeNode node = (DefaultMutableTreeNode)
-        // rootCommandNode.getChildAt(nodeIdx);
-        // CommandDescriptor descriptor = (CommandDescriptor) node.getUserObject();
-        // }
-        commandTreeModel.reload();
+        if (!newDescriptors.isEmpty()) {
+            for (CommandDescriptor descriptor : newDescriptors) {
+                DefaultMutableTreeNode newNode = new DefaultMutableTreeNode(descriptor);
+                updateCommandTree(descriptor.subCommands, newNode);
+                node.add(newNode);
+            }
+            commandTreeModel.nodesWereInserted(node,
+                    IntStream.range(node.getChildCount() - newDescriptors.size(), node.getChildCount()).toArray());
+        }
+
+        if (!toRemove.isEmpty() || !newDescriptors.isEmpty()) {
+            commandTreeModel.nodeStructureChanged(node);
+        }
     }
 
     public static class TreeCellRenderer extends DefaultTreeCellRenderer {
@@ -142,6 +183,45 @@ public class GUI extends JFrame {
 
             return this;
         }
+    }
+
+    public boolean validatePath(TreePath path, DefaultMutableTreeNode rootNode) {
+        if (path == null)
+            return false;
+        Object[] nodes = path.getPath();
+        if (nodes[0] != rootNode)
+            return false;
+        for (int i = 0; i < nodes.length - 1; i++) {
+            DefaultMutableTreeNode node = (DefaultMutableTreeNode) nodes[i];
+            DefaultMutableTreeNode nextNode = (DefaultMutableTreeNode) nodes[i + 1];
+            if (node.getIndex(nextNode) == -1)
+                return false;
+        }
+
+        return true;
+    }
+
+    public void closeCommandView() {
+        selectedNode = null;
+        splitPane.setRightComponent(emptyPanel);
+    }
+
+    @Override
+    public void valueChanged(TreeSelectionEvent e) {
+        TreePath newPath = e.getNewLeadSelectionPath();
+        if (newPath == null) {
+            closeCommandView();
+            return;
+        }
+        DefaultMutableTreeNode newNode = (DefaultMutableTreeNode) newPath.getLastPathComponent();
+        if (newNode == selectedNode) {
+            return;
+        }
+        int dividerLocation = splitPane.getDividerLocation(); // Store divider location to restore later
+        selectedNode = newNode;
+        commandView.update((CommandDescriptor) selectedNode.getUserObject());
+        splitPane.setRightComponent(commandView);
+        splitPane.setDividerLocation(dividerLocation);
     }
 
 }
