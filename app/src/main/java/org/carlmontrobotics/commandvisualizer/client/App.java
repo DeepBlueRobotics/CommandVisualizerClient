@@ -9,7 +9,6 @@ import javax.swing.SwingUtilities;
 
 import edu.wpi.first.cscore.CameraServerJNI;
 import edu.wpi.first.math.WPIMathJNI;
-import edu.wpi.first.networktables.NetworkTableInstance;
 import edu.wpi.first.networktables.NetworkTablesJNI;
 import edu.wpi.first.util.CombinedRuntimeLoader;
 import edu.wpi.first.util.WPIUtilJNI;
@@ -25,9 +24,11 @@ public class App {
         CombinedRuntimeLoader.loadLibraries(App.class, "wpiutiljni", "wpimathjni", "ntcorejni",
                 "cscorejnicvstatic");
 
-        // NetworkTableInstance.getDefault().startDSClient(); // TODO: Maybe add a GUI or a better way to specify how to connect
-        NetworkTableInstance.getDefault().setServer("localhost");
-        NetworkTableInstance.getDefault().startClient4("CommmandVisualizer");
+        NetworkConfig.load();
+
+        if(NetworkConfig.INSTANCE.initialized) {
+            NetworkConfig.INSTANCE.apply();
+        }
 
         SwingUtilities.invokeLater(GUI::new);
     }

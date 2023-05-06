@@ -13,6 +13,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import javax.swing.JFrame;
+import javax.swing.JMenu;
+import javax.swing.JMenuBar;
+import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -43,6 +46,11 @@ public class GUI extends JFrame implements TreeSelectionListener {
     private final DefaultMutableTreeNode rootCommandNode;
     private final JSplitPane splitPane;
     private final JPanel emptyPanel;
+    private final NetworkSetupPanel networkSetupPanel = new NetworkSetupPanel(this);
+    private final JMenuBar menuBar = new JMenuBar();
+    private final JMenu showMenu = new JMenu("Show");
+    private final JMenuItem showCommandsItem = new JMenuItem("Commands");
+    private final JMenuItem showNetworkConfigItem = new JMenuItem("Network Config");
     private DefaultMutableTreeNode selectedNode;
     private CommandView commandView = new DefaultCommandView();
 
@@ -72,10 +80,26 @@ public class GUI extends JFrame implements TreeSelectionListener {
         commandTree.setRootVisible(false);
         commandTree.addTreeSelectionListener(this);
 
-        add(splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
+        splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 new JScrollPane(commandTree, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                         JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED),
-                emptyPanel = new JPanel()), BorderLayout.CENTER);
+                emptyPanel = new JPanel());
+
+        showCommandsItem.addActionListener(e -> showCommands());
+        showNetworkConfigItem.addActionListener(e -> showNetworkSetup());
+
+        showMenu.add(showCommandsItem);
+        showMenu.add(showNetworkConfigItem);
+
+        menuBar.add(showMenu);
+
+        setJMenuBar(menuBar);
+
+        if(NetworkConfig.INSTANCE.initialized) {
+            showCommands();
+        } else {
+            showNetworkSetup();
+        }
 
         NetworkTableInstance.getDefault().addListener(
                 NetworkTableInstance.getDefault().getTopic(CommandVisualizer.NT_KEY),
@@ -93,6 +117,21 @@ public class GUI extends JFrame implements TreeSelectionListener {
         setVisible(true);
 
         splitPane.setDividerLocation(.5);
+    }
+
+    public void showCommands() {
+        remove(networkSetupPanel);
+        remove(splitPane);
+        add(splitPane, BorderLayout.CENTER);
+        revalidate();
+        splitPane.setDividerLocation(.5);
+    }
+
+    public void showNetworkSetup() {
+        remove(networkSetupPanel);
+        remove(splitPane);
+        add(networkSetupPanel, BorderLayout.CENTER);
+        revalidate();
     }
 
     public void updateCommandTree(CommandDescriptor[] descriptors) {
