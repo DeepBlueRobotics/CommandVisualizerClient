@@ -51,8 +51,8 @@ public class GUI extends JFrame implements TreeSelectionListener {
     private final JMenu showMenu = new JMenu("Show");
     private final JMenuItem showCommandsItem = new JMenuItem("Commands");
     private final JMenuItem showNetworkConfigItem = new JMenuItem("Network Config");
+    private final CommandView defaultCommandView = new DefaultCommandView();
     private DefaultMutableTreeNode selectedNode;
-    private CommandView commandView = new DefaultCommandView();
 
     public GUI() {
         super("Command Visualizer");
@@ -258,7 +258,10 @@ public class GUI extends JFrame implements TreeSelectionListener {
         }
         int dividerLocation = splitPane.getDividerLocation(); // Store divider location to restore later
         selectedNode = newNode;
-        commandView.update((CommandDescriptor) selectedNode.getUserObject());
+
+        CommandDescriptor descriptor = (CommandDescriptor) selectedNode.getUserObject();
+        CommandView commandView = CommandView.COMMAND_VIEWS.getOrDefault(descriptor.describer, defaultCommandView);
+        commandView.update(descriptor);
         splitPane.setRightComponent(commandView);
         splitPane.setDividerLocation(dividerLocation);
     }
